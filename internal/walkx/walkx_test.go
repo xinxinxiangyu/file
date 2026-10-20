@@ -131,7 +131,7 @@ func TestTreeLineCount(t *testing.T) {
 func TestDirSize(t *testing.T) {
 	root := buildTree(t)
 
-	bytes, files, err := walkx.DirSize(root)
+	bytes, files, err := walkx.DirSize(root, false)
 	if err != nil {
 		t.Fatalf("DirSize: %v", err)
 	}
@@ -143,10 +143,46 @@ func TestDirSize(t *testing.T) {
 	}
 }
 
+// 第 5 课闭环：同一个 inode 有两个名字时，naive 口径计两遍，
+// dedup 口径按 (Dev,Ino) 只计一遍。
+func TestDirSizeHardLinkDedup(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "a.txt")
+	b := filepath.Join(root, "b.txt") // a.txt 的硬链接，同一个 inode
+	other := filepath.Join(root, "c.txt")
+	if err := os.WriteFile(a, []byte("hello"), 0o644); err != nil { // 5
+		t.Fatal(err)
+	}
+	if err := os.Link(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("go"), 0o644); err != nil { // 2
+		t.Fatal(err)
+	}
+
+	naiveBytes, naiveFiles, err := walkx.DirSize(root, false)
+	if err != nil {
+		t.Fatalf("DirSize: %v", err)
+	}
+	if naiveBytes != 12 || naiveFiles != 3 {
+		t.Errorf("不去重：得到 %d 字节/%d 文件，期望 12/3（硬链接计两遍）",
+			naiveBytes, naiveFiles)
+	}
+
+	dedupBytes, dedupFiles, err := walkx.DirSize(root, true)
+	if err != nil {
+		t.Fatalf("DirSize(dedup): %v", err)
+	}
+	if dedupBytes != 7 || dedupFiles != 2 {
+		t.Errorf("去重后：得到 %d 字节/%d 文件，期望 7/2（a 与 b 是同一文件）",
+			dedupBytes, dedupFiles)
+	}
+}
+
 // root 不存在：WalkDir 把错误放在第一次回调里，DirSize 返回错误与零值。
 func TestDirSizeMissingRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "nope")
-	bytes, files, err := walkx.DirSize(root)
+	bytes, files, err := walkx.DirSize(root, false)
 	if err == nil {
 		t.Fatal("不存在的 root 应返回错误")
 	}
@@ -179,7 +215,7 @@ func TestDirSizeUnreadableDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(secret, 0o755) }) // 否则 TempDir 清理会失败
 
-	bytes, files, err := walkx.DirSize(root)
+	bytes, files, err := walkx.DirSize(root, false)
 	if err == nil {
 		t.Fatal("权限不足的子目录应产生错误")
 	}

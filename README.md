@@ -79,11 +79,13 @@ go run ./cmd/find . -name '*.md'
 ## 第 5 课：硬链接、符号链接与文件身份
 
 ```sh
-go run ./cmd/links demo
+go run ./cmd/links sandbox              # 11 步沙盒剧本
+go run ./cmd/du -dedup .                # 用 (Dev,Ino) 给硬链接去重后的口径
 ```
 
 在沙盒里建硬链接与符号链接，用 `Stat`/`Lstat` 对比，打印 inode 号与链接数，
-验证「删除原名后文件还在」「rename 是原子的」。从 API 行为理解
+验证「删除原名后文件还在」「rename 是原子的」「软链认名字、改名即悬空」，
+并回头用 inode 身份给第 4 课的 du 补上硬链接去重。从 API 行为理解
 「文件（inode）与文件名是两回事」。
 完整讲解见 [docs/05-links.md](docs/05-links.md)。
 

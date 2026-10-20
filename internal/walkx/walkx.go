@@ -16,8 +16,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Matcher 是 Find 的判定回调：对遍历到的每个条目调用一次。
@@ -106,13 +108,19 @@ func Find(root string, match Matcher) ([]string, error) {
 //   - 只统计 d.Type().IsRegular()：目录表自身的大小、符号链接都不计；
 //   - 用的是 FileInfo.Size()（文件逻辑长度），不是磁盘块占用，
 //     所以结果对应 du --apparent-size 而非默认 du；
-//   - 不识别硬链接：同一个 inode 被两个名字引用时会计两遍。
-//     怎么判定「同一个文件」正是第 5 课要解决的问题。
+//   - 硬链接默认仍会重复计数（第 4 课的原始行为）；dedup=true 时用
+//     map[dev:ino] 对 inode 去重，同一个文件只计第一次——这是第 5 课
+//     用「文件身份」补上的口径（对应真实 du 的默认行为）。
+//
+// 注意去重集合在一次 DirSize 调用内有效：多次调用（多个 root）各自独立，
+// 与真实 du「每个 root 单独统计」一致。符号链接不跟随、不统计，所以
+// 去重只针对真实的常规文件。
 //
 // 读不开的子目录不致命：跳过该分支、继续汇总其余部分，错误经
 // 返回值带回（可能与部分结果同时出现）。
-func DirSize(root string) (bytes int64, files int64, err error) {
+func DirSize(root string, dedup bool) (bytes int64, files int64, err error) {
 	var errs []error
+	seen := make(map[[2]uint64]struct{}) // (Dev, Ino) → 已计入
 
 	walkErr := filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -127,6 +135,14 @@ func DirSize(root string) (bytes int64, files int64, err error) {
 			errs = append(errs, err)
 			return nil
 		}
+		if dedup {
+			if id, ok := inodeIdentity(info); ok {
+				if _, dup := seen[id]; dup {
+					return nil // 同一个 inode 的另一个名字：只计第一次
+				}
+				seen[id] = struct{}{}
+			}
+		}
 		bytes += info.Size()
 		files++
 		return nil
@@ -135,6 +151,17 @@ func DirSize(root string) (bytes int64, files int64, err error) {
 		return bytes, files, walkErr
 	}
 	return bytes, files, errors.Join(errs...)
+}
+
+// inodeIdentity 从 FileInfo.Sys() 里取 (Dev, Ino) 文件身份。
+// Unix 上 Sys() 是 *syscall.Stat_t；其他平台断言失败时返回 false，
+// 调用方退化为不去重（按名字计数）。
+func inodeIdentity(info os.FileInfo) ([2]uint64, bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return [2]uint64{}, false
+	}
+	return [2]uint64{uint64(stat.Dev), uint64(stat.Ino)}, true
 }
 
 // treeNode 是 Tree 在遍历阶段记下的一个条目：只留画图需要的信息。
